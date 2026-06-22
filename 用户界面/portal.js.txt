@@ -1,0 +1,966 @@
+const state = {
+  roleChoice: "owner",
+  role: null,
+  view: "login",
+  user: null,
+  dashboard: null,
+  owner: {
+    vehicles: [],
+    violations: [],
+    penalties: [],
+    appeals: [],
+  },
+  admin: {
+    vehicles: [],
+    violations: [],
+    penalties: [],
+    appeals: [],
+  },
+  filters: {
+    access: { search: "", status: "" },
+    violations: { search: "", kind: "" },
+    appeals: { search: "", status: "" },
+  },
+};
+
+const root = document.querySelector("#portal");
+const toast = document.querySelector("#toast");
+const modalLayer = document.querySelector("#modalLayer");
+const API_PREFIX = "/portal-api";
+
+const OWNER_VIEWS = [
+  { id: "profile", label: "个人信息", icon: "user" },
+  { id: "ownerVehicles", label: "车辆信息", icon: "car" },
+  { id: "ownerViolations", label: "违规记录", icon: "alert" },
+];
+
+const ADMIN_VIEWS = [
+  { id: "adminProfile", label: "个人信息", icon: "user" },
+  { id: "accessReview", label: "通行权限认证", icon: "shield" },
+  { id: "violationManage", label: "违规处罚", icon: "alert" },
+  { id: "appealManage", label: "申诉处理", icon: "message" },
+];
+
+const icons = {
+  user: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>`,
+  car: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17h10"/><path d="M5 17h14v-5l-2-5H7l-2 5v5Z"/><circle cx="7.5" cy="17.5" r="1.5"/><circle cx="16.5" cy="17.5" r="1.5"/><path d="M7 12h10"/></svg>`,
+  alert: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5"/><path d="M12 17h.01"/></svg>`,
+  message: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z"/></svg>`,
+  shield: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>`,
+  plus: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
+  search: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
+  refresh: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h4"/><path d="M6 22v-4H2"/></svg>`,
+  close: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
+  check: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m20 6-11 11-5-5"/></svg>`,
+  x: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
+};
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function option(value, text, selected) {
+  return `<option value="${escapeHtml(value)}" ${String(value) === String(selected ?? "") ? "selected" : ""}>${escapeHtml(text)}</option>`;
+}
+
+function badge(text, tone = "dark") {
+  return `<span class="badge ${tone}">${escapeHtml(text || "-")}</span>`;
+}
+
+function icon(name) {
+  return icons[name] || "";
+}
+
+function fmtDate(value, withTime = true) {
+  if (!value) return "无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return escapeHtml(value);
+  return withTime ? date.toLocaleString("zh-CN", { hour12: false }) : date.toLocaleDateString("zh-CN");
+}
+
+function datetimeLocalNow() {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+}
+
+function serializeForm(form) {
+  return Object.fromEntries(new FormData(form).entries());
+}
+
+function accessTone(status) {
+  return {
+    not_applied: "dark",
+    pending: "blue",
+    approved: "green",
+    rejected: "red",
+  }[status] || "dark";
+}
+
+function appealTone(status) {
+  return {
+    open: "blue",
+    reviewed: "amber",
+    resolved: "green",
+    rejected: "red",
+  }[status] || "dark";
+}
+
+function appealLabel(status) {
+  return {
+    open: "待处理",
+    reviewed: "已查看",
+    resolved: "已撤销处罚",
+    rejected: "已驳回",
+  }[status] || status;
+}
+
+function penaltyLabel(status) {
+  return {
+    pending: "待处理",
+    active: "执行中",
+    completed: "已完成",
+    cancelled: "已取消",
+  }[status] || status;
+}
+
+function ownerPointSummary(violations = []) {
+  const deducted = violations
+    .filter((item) => item.status !== "cancelled")
+    .reduce((sum, item) => sum + Number(item.points || 0), 0);
+  const budget = 12;
+  return {
+    budget,
+    deducted,
+    remaining: Math.max(0, budget - deducted),
+  };
+}
+
+async function api(path, options = {}) {
+  const portalPath = path.startsWith("/api/") ? path.replace(/^\/api/, "") : path;
+  const response = await fetch(`${API_PREFIX}${portalPath}`, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function showToast(message, isError = false) {
+  toast.textContent = message;
+  toast.classList.toggle("error", isError);
+  toast.hidden = false;
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => {
+    toast.hidden = true;
+  }, 2800);
+}
+
+function openModal({ title, subtitle = "", body, onSubmit, width = "" }) {
+  modalLayer.hidden = false;
+  modalLayer.innerHTML = `
+    <section class="modal-card" style="${width ? `width:${escapeHtml(width)}` : ""}">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Form</p>
+          <h2>${escapeHtml(title)}</h2>
+          ${subtitle ? `<p class="muted">${escapeHtml(subtitle)}</p>` : ""}
+        </div>
+        <button class="icon-button" type="button" data-close-modal title="关闭">${icon("close")}</button>
+      </div>
+      <div class="modal-body">${body}</div>
+    </section>
+  `;
+  modalLayer.querySelector("[data-close-modal]").addEventListener("click", closeModal);
+  modalLayer.onclick = closeOnBackdrop;
+  const form = modalLayer.querySelector("form");
+  if (form && onSubmit) {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = form.querySelector("[type='submit']");
+      if (submitButton) submitButton.disabled = true;
+      try {
+        await onSubmit(serializeForm(form), form);
+      } catch (error) {
+        showToast(error.message, true);
+      } finally {
+        if (submitButton) submitButton.disabled = false;
+      }
+    });
+  }
+}
+
+function closeOnBackdrop(event) {
+  if (event.target === modalLayer) closeModal();
+}
+
+function closeModal() {
+  modalLayer.hidden = true;
+  modalLayer.innerHTML = "";
+  modalLayer.onclick = null;
+}
+
+function navForRole() {
+  return state.role === "admin" ? ADMIN_VIEWS : OWNER_VIEWS;
+}
+
+function setView(view) {
+  state.view = view;
+  render();
+}
+
+async function login(role, username, password) {
+  const data = await api("/api/login", {
+    method: "POST",
+    body: JSON.stringify({ role, username, password }),
+  });
+  state.role = role;
+  state.user = data.user;
+  if (role === "owner") {
+    state.owner.vehicles = data.vehicles || [];
+    state.owner.violations = data.violations || [];
+    state.owner.penalties = data.penalties || [];
+    state.owner.appeals = data.appeals || [];
+    state.view = "profile";
+  } else {
+    state.dashboard = data.dashboard;
+    state.view = "adminProfile";
+    await loadAdminData();
+  }
+  render();
+}
+
+function logout() {
+  state.role = null;
+  state.view = "login";
+  state.user = null;
+  state.dashboard = null;
+  state.owner = { vehicles: [], violations: [], penalties: [], appeals: [] };
+  state.admin = { vehicles: [], violations: [], penalties: [], appeals: [] };
+  render();
+}
+
+async function refreshOwner() {
+  if (!state.user?.id) return;
+  const data = await api(`/api/owners/${state.user.id}/home`);
+  state.owner.vehicles = data.vehicles || [];
+  state.owner.violations = data.violations || [];
+  state.owner.penalties = data.penalties || [];
+  state.owner.appeals = data.appeals || [];
+}
+
+async function loadAdminData() {
+  const [dashboard, vehicles, violations, penalties, appeals] = await Promise.all([
+    api("/api/dashboard"),
+    api(`/api/vehicles?${new URLSearchParams(state.filters.access)}`),
+    api(`/api/violations?${new URLSearchParams(state.filters.violations)}`),
+    api(`/api/penalties?${new URLSearchParams({ search: state.filters.violations.search })}`),
+    api(`/api/appeals?${new URLSearchParams(state.filters.appeals)}`),
+  ]);
+  state.dashboard = dashboard;
+  state.admin.vehicles = vehicles.vehicles || [];
+  state.admin.violations = violations.violations || [];
+  state.admin.penalties = penalties.penalties || [];
+  state.admin.appeals = appeals.appeals || [];
+}
+
+async function refreshCurrent() {
+  try {
+    if (state.role === "owner") {
+      await refreshOwner();
+    } else if (state.role === "admin") {
+      await loadAdminData();
+    }
+    render();
+    showToast("数据已刷新");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function render() {
+  if (!state.role) {
+    renderLogin();
+    return;
+  }
+  renderShell();
+}
+
+function renderLogin() {
+  root.innerHTML = `
+    <main class="login-screen">
+      <section class="login-panel">
+        <div class="login-card">
+          <div class="brand-row">
+            <div class="brand-mark">${icon("shield")}</div>
+            <div>
+              <strong>校园机动车管理新门户</strong>
+              <span>车辆权限 · 违规处罚 · 申诉处理</span>
+            </div>
+          </div>
+          <h1 class="login-title">账号密码登录</h1>
+          <p class="login-subtitle">车主和管理员使用各自账号进入不同工作台，业务数据与原网站保持一致。</p>
+          <div class="role-switch" role="tablist" aria-label="登录身份">
+            <button type="button" data-role="owner" class="${state.roleChoice === "owner" ? "is-active" : ""}">车主登录</button>
+            <button type="button" data-role="admin" class="${state.roleChoice === "admin" ? "is-active" : ""}">管理员登录</button>
+          </div>
+          <form id="loginForm" class="form-stack">
+            <div class="field">
+              <label for="username">账号</label>
+              <input id="username" name="username" autocomplete="username" value="${state.roleChoice === "admin" ? "admin" : "owner1"}" required />
+            </div>
+            <div class="field">
+              <label for="password">密码</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" value="123456" required />
+            </div>
+            <button class="primary-button" type="submit">${icon("check")}登录</button>
+          </form>
+        </div>
+      </section>
+      <section class="login-visual" aria-hidden="true">
+        <div class="traffic-board">
+          <div class="signal-strip">
+            <div class="signal-card"><span>权限审核</span><strong>在线</strong></div>
+            <div class="signal-card"><span>违规处理</span><strong>实时</strong></div>
+            <div class="signal-card"><span>申诉复核</span><strong>闭环</strong></div>
+          </div>
+          <div class="road-panel">
+            <div class="gate-house"><strong>校园入口</strong><span class="muted">通行权限自动核验</span></div>
+            <div class="gate-arm"></div>
+            <div class="vehicle-shape"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  `;
+  root.querySelectorAll("[data-role]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.roleChoice = button.dataset.role;
+      renderLogin();
+    });
+  });
+  root.querySelector("#loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = serializeForm(event.currentTarget);
+    try {
+      await login(state.roleChoice, data.username.trim(), data.password.trim());
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
+function renderShell() {
+  const nav = navForRole();
+  const active = nav.find((item) => item.id === state.view) || nav[0];
+  root.innerHTML = `
+    <div class="dashboard-shell">
+      <header class="portal-header">
+        <div class="brand-row" style="margin:0">
+          <div class="brand-mark">${icon("shield")}</div>
+          <div>
+            <strong>校园机动车管理</strong>
+            <span>${state.role === "admin" ? "管理员工作台" : "车主服务台"}</span>
+          </div>
+        </div>
+        <nav class="portal-nav" aria-label="门户导航">
+          ${nav.map((item) => `
+            <button class="nav-tab ${item.id === active.id ? "is-active" : ""}" type="button" data-view="${item.id}">
+              ${icon(item.icon)}${escapeHtml(item.label)}
+            </button>
+          `).join("")}
+        </nav>
+        <div class="header-actions">
+          <span class="user-chip">${escapeHtml(state.user?.username || "")}</span>
+          <button class="icon-button" type="button" data-action="refresh" title="刷新">${icon("refresh")}</button>
+          <button class="secondary-button" type="button" data-action="logout">退出</button>
+        </div>
+      </header>
+      <main class="workspace" id="viewRoot"></main>
+    </div>
+  `;
+  root.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+  root.querySelector("[data-action='logout']").addEventListener("click", logout);
+  root.querySelector("[data-action='refresh']").addEventListener("click", refreshCurrent);
+  renderView();
+}
+
+function renderView() {
+  const viewRoot = root.querySelector("#viewRoot");
+  if (state.view === "profile") renderOwnerProfile(viewRoot);
+  if (state.view === "ownerVehicles") renderOwnerVehicles(viewRoot);
+  if (state.view === "ownerViolations") renderOwnerViolations(viewRoot);
+  if (state.view === "adminProfile") renderAdminProfile(viewRoot);
+  if (state.view === "accessReview") renderAccessReview(viewRoot);
+  if (state.view === "violationManage") renderViolationManage(viewRoot);
+  if (state.view === "appealManage") renderAppealManage(viewRoot);
+}
+
+function viewHeader(kicker, title, desc, action = "") {
+  return `
+    <div class="view-head">
+      <div>
+        <p class="eyebrow">${escapeHtml(kicker)}</p>
+        <h1>${escapeHtml(title)}</h1>
+        <p>${escapeHtml(desc)}</p>
+      </div>
+      ${action ? `<div class="button-row">${action}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderOwnerProfile(target) {
+  const user = state.user;
+  const points = ownerPointSummary(state.owner.violations);
+  target.innerHTML = `
+    ${viewHeader("Owner Center", "个人信息", "查看当前车主账号和业务数据概况。")}
+    <section class="panel">
+      <div class="section-head"><h2>账号资料</h2>${badge(user.username, "blue")}</div>
+      <div class="panel-body">
+        <div class="summary-list">
+          ${summary("姓名", user.name)}
+          ${summary("联系电话", user.phone || "-")}
+          ${summary("身份类别", user.identity || "车主")}
+          ${summary("所属单位", user.department || "-")}
+          ${summary("个人记分", `${points.remaining} / ${points.budget}`, `已扣 ${points.deducted} 分`)}
+        </div>
+      </div>
+    </section>
+    <div class="grid three" style="margin-top:16px">
+      <section class="panel"><div class="panel-body">${summary("已绑定车辆", `${state.owner.vehicles.length} 辆`)}</div></section>
+      <section class="panel"><div class="panel-body">${summary("违规记录", `${state.owner.violations.length} 条`)}</div></section>
+      <section class="panel"><div class="panel-body">${summary("申诉记录", `${state.owner.appeals.length} 条`)}</div></section>
+    </div>
+  `;
+}
+
+function summary(label, value, detail = "") {
+  return `<div class="summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "-")}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</div>`;
+}
+
+function renderOwnerVehicles(target) {
+  target.innerHTML = `
+    ${viewHeader("Vehicle", "车辆信息", "注册绑定车辆，查看通行权限状态，并对未申请或未通过车辆发起权限申请。", `<button class="primary-button" type="button" data-action="register-owner-vehicle">${icon("plus")}注册绑定车辆</button>`)}
+    <section class="panel">
+      <div class="section-head"><h2>我的车辆</h2>${badge(`${state.owner.vehicles.length} 辆`, "blue")}</div>
+      <div class="panel-body">
+        ${ownerVehicleTable(state.owner.vehicles)}
+      </div>
+    </section>
+  `;
+  target.querySelector("[data-action='register-owner-vehicle']").addEventListener("click", openOwnerVehicleModal);
+  target.querySelectorAll("[data-action='request-access']").forEach((button) => {
+    button.addEventListener("click", () => requestAccess(button.dataset.id));
+  });
+}
+
+function ownerVehicleTable(rows) {
+  if (!rows.length) return `<div class="empty">暂无绑定车辆，可点击右上角注册绑定车辆。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>类型</th><th>通行权限</th><th>权限开始</th><th>权限结束</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td><strong>${escapeHtml(item.plate_number)}</strong><span class="subtext">${escapeHtml(item.brand_model || "未登记车型")} ${escapeHtml(item.color || "")}</span></td>
+              <td>${badge(item.type_label, "dark")}</td>
+              <td>${badge(item.access_status_label || "未申请", accessTone(item.access_status))}</td>
+              <td>${item.access_status === "approved" ? fmtDate(item.permit_start, false) : "无"}</td>
+              <td>${item.access_status === "approved" ? fmtDate(item.permit_end, false) : "无"}</td>
+              <td>
+                ${["not_applied", "rejected"].includes(item.access_status)
+                  ? `<button class="ghost-button" type="button" data-action="request-access" data-id="${item.id}">${icon("check")}申请权限</button>`
+                  : item.access_status === "pending"
+                    ? badge("等待管理员审核", "blue")
+                    : badge("已通过", "green")}
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function openOwnerVehicleModal() {
+  const user = state.user;
+  openModal({
+    title: "注册绑定车辆",
+    subtitle: "车主只能登记车辆基础信息，通行权限由管理员审核。",
+    body: `
+      <form>
+        <div class="form-grid">
+          <div class="field"><label>车牌号</label><input name="plate_number" required /></div>
+          <div class="field"><label>车辆类型</label><select name="vehicle_type">${option("A", "A 类注册车辆", "A")}${option("B", "B 类预约车辆", "")}${option("C", "C 类摩托车", "")}</select></div>
+          <div class="field"><label>车主姓名</label><input name="owner_name" value="${escapeHtml(user.name || "")}" required /></div>
+          <div class="field"><label>联系电话</label><input name="owner_phone" value="${escapeHtml(user.phone || "")}" required /></div>
+          <div class="field"><label>身份类别</label><input name="owner_identity" value="${escapeHtml(user.identity || "车主")}" /></div>
+          <div class="field"><label>所属单位</label><input name="department" value="${escapeHtml(user.department || "")}" /></div>
+          <div class="field"><label>车型</label><input name="brand_model" /></div>
+          <div class="field"><label>颜色</label><input name="color" /></div>
+          <div class="field"><label>预约人</label><input name="inviter_name" /></div>
+          <div class="field full"><label>备注</label><textarea name="notes"></textarea></div>
+        </div>
+        <div class="modal-foot">
+          <button class="secondary-button" type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="submit">${icon("check")}保存</button>
+        </div>
+      </form>
+    `,
+    onSubmit: async (data) => {
+      await api(`/api/owners/${state.user.id}/vehicles`, {
+        method: "POST",
+        body: JSON.stringify({ ...data, access_status: "not_applied", permit_status: "active" }),
+      });
+      await refreshOwner();
+      closeModal();
+      render();
+      showToast("车辆已绑定");
+    },
+  });
+  modalLayer.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+async function requestAccess(vehicleId) {
+  try {
+    await api(`/api/vehicles/${vehicleId}/request-access`, {
+      method: "POST",
+      body: JSON.stringify({ notes: "车主通过新门户申请通行权限" }),
+    });
+    await refreshOwner();
+    render();
+    showToast("通行权限申请已提交");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function renderOwnerViolations(target) {
+  target.innerHTML = `
+    ${viewHeader("Violation", "违规记录", "查看本人车辆违规记录，并对未撤销记录提交申诉。")}
+    <section class="panel">
+      <div class="section-head"><h2>违规记录</h2>${badge(`${state.owner.violations.length} 条`, "blue")}</div>
+      <div class="panel-body">${ownerViolationTable(state.owner.violations)}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="section-head"><h2>我的申诉</h2>${badge(`${state.owner.appeals.length} 条`, "blue")}</div>
+      <div class="panel-body">${ownerAppealTable(state.owner.appeals)}</div>
+    </section>
+  `;
+  target.querySelectorAll("[data-action='appeal']").forEach((button) => {
+    button.addEventListener("click", () => openAppealModal(button.dataset.id));
+  });
+}
+
+function ownerViolationTable(rows) {
+  if (!rows.length) return `<div class="empty">暂无违规记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>违规类型</th><th>地点</th><th>扣分</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td><strong>${escapeHtml(item.plate_number)}</strong><span class="subtext">${escapeHtml(item.owner_name || "")}</span></td>
+              <td>${badge(`${item.kind_label || item.kind} / ${item.severity_label || item.severity}`, item.severity === "danger" || item.severity === "serious" ? "red" : "amber")}</td>
+              <td>${escapeHtml(item.location)}</td>
+              <td>${escapeHtml(item.points)} 分</td>
+              <td>${fmtDate(item.occurred_at)}</td>
+              <td>${escapeHtml(item.status_label || item.status)}</td>
+              <td>${item.status === "cancelled" ? badge("已撤销", "green") : `<button class="ghost-button" type="button" data-action="appeal" data-id="${item.id}">${icon("message")}申诉</button>`}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function ownerAppealTable(rows) {
+  if (!rows.length) return `<div class="empty">暂无申诉记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>违规</th><th>申诉内容</th><th>状态</th><th>管理员回复</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.plate_number || "-")}</td>
+              <td>${escapeHtml(item.kind_label || item.action_title || "-")}<span class="subtext">${fmtDate(item.occurred_at)}</span></td>
+              <td>${escapeHtml(item.message)}</td>
+              <td>${badge(appealLabel(item.status), appealTone(item.status))}</td>
+              <td>${escapeHtml(item.admin_response || "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function openAppealModal(violationId) {
+  const violation = state.owner.violations.find((item) => String(item.id) === String(violationId));
+  if (!violation) return;
+  openModal({
+    title: "提交违规申诉",
+    subtitle: `${violation.plate_number} · ${violation.kind_label || violation.kind}`,
+    body: `
+      <form>
+        <input type="hidden" name="violation_id" value="${escapeHtml(violation.id)}" />
+        <div class="field">
+          <label>申诉内容</label>
+          <textarea name="message" required placeholder="请填写申诉理由、证明材料编号或补充说明"></textarea>
+        </div>
+        <div class="modal-foot">
+          <button class="secondary-button" type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="submit">${icon("check")}提交申诉</button>
+        </div>
+      </form>
+    `,
+    onSubmit: async (data) => {
+      await api("/api/appeals", { method: "POST", body: JSON.stringify(data) });
+      await refreshOwner();
+      closeModal();
+      render();
+      showToast("申诉已提交");
+    },
+  });
+  modalLayer.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+function renderAdminProfile(target) {
+  const d = state.dashboard || {};
+  const user = state.user;
+  const openAppeals = state.admin.appeals.filter((item) => item.status === "open").length;
+  target.innerHTML = `
+    ${viewHeader("Admin Center", "个人信息", "查看管理员资料和当前系统运行概况。")}
+    <section class="panel">
+      <div class="section-head"><h2>管理员资料</h2>${badge(user.username, "blue")}</div>
+      <div class="panel-body">
+        <div class="summary-list">
+          ${summary("姓名", user.name)}
+          ${summary("职务", user.title || "管理员")}
+          ${summary("联系电话", user.phone || "-")}
+          ${summary("所属单位", user.department || "-")}
+        </div>
+      </div>
+    </section>
+    <div class="grid three" style="margin-top:16px">
+      <section class="panel"><div class="panel-body">${summary("车辆总数", `${d.vehicleStats?.total || 0} 辆`)}</div></section>
+      <section class="panel"><div class="panel-body">${summary("本年违规", `${d.violationStats?.total || 0} 条`)}</div></section>
+      <section class="panel"><div class="panel-body">${summary("待处理申诉", `${openAppeals} 条`)}</div></section>
+    </div>
+  `;
+}
+
+function renderAccessReview(target) {
+  const filters = state.filters.access;
+  target.innerHTML = `
+    ${viewHeader("Access", "通行权限认证", "查询车主和车辆信息，对审核中的通行权限申请进行通过或拒绝。")}
+    <section class="panel">
+      <div class="section-head"><h2>车辆权限列表</h2>${badge(`${state.admin.vehicles.length} 辆`, "blue")}</div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <div class="field"><label>检索</label><input id="accessSearch" value="${escapeHtml(filters.search)}" placeholder="车牌、车主、电话、单位" /></div>
+          <div class="field"><label>权限状态</label><select id="accessStatus">${option("", "全部", filters.status)}${option("not_applied", "未申请", filters.status)}${option("pending", "审核中", filters.status)}${option("approved", "已通过", filters.status)}${option("rejected", "未通过", filters.status)}</select></div>
+          <button class="secondary-button" type="button" data-action="filter-access">${icon("search")}查询</button>
+        </div>
+        ${adminVehicleTable(state.admin.vehicles)}
+      </div>
+    </section>
+  `;
+  target.querySelector("[data-action='filter-access']").addEventListener("click", filterAccess);
+  target.querySelector("#accessSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") filterAccess();
+  });
+  target.querySelectorAll("[data-action='review-access']").forEach((button) => {
+    button.addEventListener("click", () => reviewAccess(button.dataset.id, button.dataset.decision));
+  });
+}
+
+function adminVehicleTable(rows) {
+  if (!rows.length) return `<div class="empty">没有匹配的车辆记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>车主</th><th>类型</th><th>通行权限</th><th>权限期限</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td><strong>${escapeHtml(item.plate_number)}</strong><span class="subtext">${escapeHtml(item.brand_model || "未登记车型")} ${escapeHtml(item.color || "")}</span></td>
+              <td>${escapeHtml(item.owner_name)}<span class="subtext">${escapeHtml(item.owner_phone || "-")} · ${escapeHtml(item.department || "-")}</span></td>
+              <td>${badge(item.type_label, "dark")}</td>
+              <td>${badge(item.access_status_label || "未申请", accessTone(item.access_status))}</td>
+              <td>${item.access_status === "approved" ? `${fmtDate(item.permit_start, false)} 至 ${fmtDate(item.permit_end, false)}` : "无"}</td>
+              <td>
+                <div class="button-row">
+                  <button class="ghost-button" type="button" data-action="review-access" data-decision="approved" data-id="${item.id}" ${item.access_status === "approved" ? "disabled" : ""}>${icon("check")}通过</button>
+                  <button class="ghost-button danger" type="button" data-action="review-access" data-decision="rejected" data-id="${item.id}" ${item.access_status === "rejected" ? "disabled" : ""}>${icon("x")}拒绝</button>
+                </div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function filterAccess() {
+  state.filters.access = {
+    search: root.querySelector("#accessSearch").value.trim(),
+    status: root.querySelector("#accessStatus").value,
+  };
+  try {
+    state.admin.vehicles = (await api(`/api/vehicles?${new URLSearchParams(state.filters.access)}`)).vehicles || [];
+    render();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function reviewAccess(vehicleId, decision) {
+  try {
+    await api(`/api/vehicles/${vehicleId}/review-access`, {
+      method: "POST",
+      body: JSON.stringify({
+        decision,
+        notes: decision === "approved" ? "管理员在新门户审批通过" : "管理员在新门户驳回申请",
+      }),
+    });
+    await loadAdminData();
+    render();
+    showToast(decision === "approved" ? "已通过通行权限" : "已拒绝通行权限");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function renderViolationManage(target) {
+  const filters = state.filters.violations;
+  target.innerHTML = `
+    ${viewHeader("Penalty", "违规处罚", "管理员查询车辆和车主信息，登记违规，并查看系统生成的处罚记录。", `<button class="primary-button" type="button" data-action="new-violation">${icon("plus")}登记违规</button>`)}
+    <section class="panel">
+      <div class="section-head"><h2>违规查询</h2>${badge(`${state.admin.violations.length} 条`, "blue")}</div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <div class="field"><label>检索</label><input id="violationSearch" value="${escapeHtml(filters.search)}" placeholder="车牌、车主、地点、说明" /></div>
+          <div class="field"><label>违规类型</label><select id="violationKind">${option("", "全部", filters.kind)}${option("speeding", "超速", filters.kind)}${option("parking", "违停", filters.kind)}${option("malignant", "恶性违规", filters.kind)}${option("other", "其他", filters.kind)}</select></div>
+          <button class="secondary-button" type="button" data-action="filter-violations">${icon("search")}查询</button>
+        </div>
+        ${adminViolationTable(state.admin.violations)}
+      </div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="section-head"><h2>处罚记录</h2>${badge(`${state.admin.penalties.length} 条`, "blue")}</div>
+      <div class="panel-body">${adminPenaltyTable(state.admin.penalties)}</div>
+    </section>
+  `;
+  target.querySelector("[data-action='new-violation']").addEventListener("click", openViolationModal);
+  target.querySelector("[data-action='filter-violations']").addEventListener("click", filterViolations);
+  target.querySelector("#violationSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") filterViolations();
+  });
+}
+
+function adminViolationTable(rows) {
+  if (!rows.length) return `<div class="empty">没有匹配的违规记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>车主</th><th>违规类型</th><th>地点</th><th>扣分</th><th>时间</th><th>状态</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td><strong>${escapeHtml(item.plate_number)}</strong><span class="subtext">${escapeHtml(item.type_label || "")}</span></td>
+              <td>${escapeHtml(item.owner_name)}<span class="subtext">${escapeHtml(item.owner_phone || "-")}</span></td>
+              <td>${badge(`${item.kind_label || item.kind} / ${item.severity_label || item.severity}`, item.severity === "danger" || item.severity === "serious" ? "red" : "amber")}</td>
+              <td>${escapeHtml(item.location)}</td>
+              <td>${escapeHtml(item.points)} 分</td>
+              <td>${fmtDate(item.occurred_at)}</td>
+              <td>${escapeHtml(item.status_label || item.status)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function adminPenaltyTable(rows) {
+  if (!rows.length) return `<div class="empty">暂无处罚记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>处罚</th><th>扣分</th><th>期限</th><th>状态</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.plate_number || "-")}<span class="subtext">${escapeHtml(item.owner_name || "")}</span></td>
+              <td><strong>${escapeHtml(item.action_title || "-")}</strong><span class="subtext">${escapeHtml(item.action_detail || "")}</span></td>
+              <td>${escapeHtml(item.points || 0)} 分</td>
+              <td>${item.start_at ? `${fmtDate(item.start_at)} 至 ${fmtDate(item.end_at)}` : "无"}</td>
+              <td>${badge(penaltyLabel(item.status), item.status === "cancelled" ? "red" : item.status === "completed" ? "green" : "blue")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function filterViolations() {
+  state.filters.violations = {
+    search: root.querySelector("#violationSearch").value.trim(),
+    kind: root.querySelector("#violationKind").value,
+  };
+  try {
+    const [violations, penalties] = await Promise.all([
+      api(`/api/violations?${new URLSearchParams(state.filters.violations)}`),
+      api(`/api/penalties?${new URLSearchParams({ search: state.filters.violations.search })}`),
+    ]);
+    state.admin.violations = violations.violations || [];
+    state.admin.penalties = penalties.penalties || [];
+    render();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function openViolationModal() {
+  const vehicleOptions = state.admin.vehicles
+    .map((vehicle) => option(vehicle.id, `${vehicle.plate_number} · ${vehicle.owner_name} · ${vehicle.type_label}`, ""))
+    .join("");
+  openModal({
+    title: "登记违规",
+    subtitle: "只有管理员可以登记违规记录，提交后系统会按规则生成处罚记录。",
+    body: `
+      <form>
+        <div class="form-grid">
+          <div class="field full"><label>车辆</label><select name="vehicle_id" required>${option("", "请选择车辆", "")}${vehicleOptions}</select></div>
+          <div class="field"><label>违规类型</label><select name="kind" id="kindSelect">${option("speeding", "超速", "speeding")}${option("parking", "违停", "")}${option("malignant", "恶性违规", "")}${option("other", "其他", "")}</select></div>
+          <div class="field"><label>发生时间</label><input name="occurred_at" type="datetime-local" value="${datetimeLocalNow()}" /></div>
+          <div class="field"><label>地点</label><input name="location" value="校内道路" required /></div>
+          <div class="field"><label>实测速度 km/h</label><input name="speed" type="number" min="1" step="1" /></div>
+          <div class="field"><label>限速 km/h</label><input name="limit_speed" type="number" min="1" step="1" value="30" /></div>
+          <div class="field"><label>违停等级</label><select name="severity">${option("normal", "普通违停", "normal")}${option("serious", "严重违停", "")}${option("danger", "危险违停", "")}</select></div>
+          <div class="field"><label>人工扣分</label><input name="points" type="number" min="0" max="99" step="1" value="0" /></div>
+          <div class="field"><label>来源</label><select name="source">${option("视频监控", "视频监控", "视频监控")}${option("固定测速", "固定测速", "")}${option("移动测速", "移动测速", "")}${option("巡查录入", "巡查录入", "")}${option("举报核实", "举报核实", "")}</select></div>
+          <div class="field"><label>证据编号</label><input name="evidence_ref" /></div>
+          <div class="field full"><label>情况说明</label><textarea name="description"></textarea></div>
+        </div>
+        <div class="modal-foot">
+          <button class="secondary-button" type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="submit">${icon("check")}保存</button>
+        </div>
+      </form>
+    `,
+    onSubmit: async (data) => {
+      if (data.kind !== "other") delete data.points;
+      if (data.kind !== "parking") delete data.severity;
+      await api("/api/violations", {
+        method: "POST",
+        body: JSON.stringify({ ...data, processor: state.user?.name || "管理员" }),
+      });
+      await loadAdminData();
+      closeModal();
+      render();
+      showToast("违规记录已登记");
+    },
+  });
+  modalLayer.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+function renderAppealManage(target) {
+  const filters = state.filters.appeals;
+  target.innerHTML = `
+    ${viewHeader("Appeal", "申诉处理", "查询车主和车辆申诉信息，管理员可撤销处罚或驳回申诉请求。")}
+    <section class="panel">
+      <div class="section-head"><h2>申诉列表</h2>${badge(`${state.admin.appeals.length} 条`, "blue")}</div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <div class="field"><label>检索</label><input id="appealSearch" value="${escapeHtml(filters.search)}" placeholder="车牌、车主、电话、地点、申诉内容" /></div>
+          <div class="field"><label>处理状态</label><select id="appealStatus">${option("", "全部", filters.status)}${option("open", "待处理", filters.status)}${option("reviewed", "已查看", filters.status)}${option("resolved", "已撤销处罚", filters.status)}${option("rejected", "已驳回", filters.status)}</select></div>
+          <button class="secondary-button" type="button" data-action="filter-appeals">${icon("search")}查询</button>
+        </div>
+        ${adminAppealTable(state.admin.appeals)}
+      </div>
+    </section>
+  `;
+  target.querySelector("[data-action='filter-appeals']").addEventListener("click", filterAppeals);
+  target.querySelector("#appealSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") filterAppeals();
+  });
+  target.querySelectorAll("[data-action='appeal-decision']").forEach((button) => {
+    button.addEventListener("click", () => decideAppeal(button.dataset.id, button.dataset.status));
+  });
+}
+
+function adminAppealTable(rows) {
+  if (!rows.length) return `<div class="empty">没有匹配的申诉记录。</div>`;
+  return `
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>车辆</th><th>车主</th><th>违规</th><th>申诉内容</th><th>状态</th><th>回复</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.plate_number || "-")}</td>
+              <td>${escapeHtml(item.owner_name || "-")}<span class="subtext">${escapeHtml(item.owner_phone || "-")}</span></td>
+              <td>${escapeHtml(item.kind_label || item.action_title || "-")}<span class="subtext">${fmtDate(item.occurred_at)}</span></td>
+              <td>${escapeHtml(item.message)}</td>
+              <td>${badge(appealLabel(item.status), appealTone(item.status))}</td>
+              <td>${escapeHtml(item.admin_response || "-")}</td>
+              <td>
+                <div class="button-row">
+                  <button class="ghost-button" type="button" data-action="appeal-decision" data-status="resolved" data-id="${item.id}" ${item.status === "resolved" ? "disabled" : ""}>${icon("check")}撤销</button>
+                  <button class="ghost-button danger" type="button" data-action="appeal-decision" data-status="rejected" data-id="${item.id}" ${item.status === "rejected" ? "disabled" : ""}>${icon("x")}驳回</button>
+                </div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function filterAppeals() {
+  state.filters.appeals = {
+    search: root.querySelector("#appealSearch").value.trim(),
+    status: root.querySelector("#appealStatus").value,
+  };
+  try {
+    state.admin.appeals = (await api(`/api/appeals?${new URLSearchParams(state.filters.appeals)}`)).appeals || [];
+    render();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function decideAppeal(appealId, status) {
+  try {
+    await api(`/api/appeals/${appealId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        status,
+        processor: state.user?.name || "管理员",
+        admin_response: status === "resolved" ? "申诉通过，已撤销关联违规、处罚和扣分记录。" : "申诉材料不足，维持原违规处罚决定。",
+      }),
+    });
+    await loadAdminData();
+    render();
+    showToast(status === "resolved" ? "已撤销处罚" : "已驳回申诉");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+render();
